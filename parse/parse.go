@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/mikezhang666/goplus/gostyle"
@@ -21,7 +22,7 @@ const (
 )
 
 // ReadFile 解析文件
-func ReadFile(filePath string) error {
+func ReadFile(filePath string, addTags ...*gostyle.StructFieldTag) (string, error) {
 	var ext ExtType
 	switch filepath.Ext(filePath) {
 	case ".json":
@@ -31,19 +32,19 @@ func ReadFile(filePath string) error {
 	case ".yaml":
 		ext = ExtTypeYAML
 	default:
-		return fmt.Errorf("ext is not support")
+		panic(fmt.Sprintf("ext unmarshal is not support:%s", ext))
 	}
 
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		return err
+		return "", err
 	}
-	fatherStructName := gostyle.FormatToCamelCase(filepath.Base(filepathplus.NoExt(filePath)))
-	return Parse(data, fatherStructName, ext)
+	name := gostyle.FormatToCamelCase(filepath.Base(filepathplus.NoExt(filePath)))
+	return Parse(data, name, ext, addTags...)
 }
 
 // Parse 解析数据
-func Parse(data []byte, fatherStructName string, ext ExtType, addTags ...*gostyle.StructFieldTag) error {
+func Parse(data []byte, fatherStructName string, ext ExtType, addTags ...*gostyle.StructFieldTag) (string, error) {
 	var mapData map[string]interface{}
 	var err error
 
@@ -53,10 +54,10 @@ func Parse(data []byte, fatherStructName string, ext ExtType, addTags ...*gostyl
 	case ExtTypeYAML:
 		mapData, err = YAMLUnmarshal(data)
 	default:
-		err = fmt.Errorf("ext is not support:%s", ext)
+		panic(fmt.Sprintf("ext unmarshal is not support:%s", ext))
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	parseData := &parseData{
@@ -68,7 +69,30 @@ func Parse(data []byte, fatherStructName string, ext ExtType, addTags ...*gostyl
 		parseData.addTags = addTags
 	}
 	_, err = parseData.parseMapAsStruct(fatherStructName, mapData)
-	return err
+	return parseData.string(), err
+}
+
+func getTags(value string, ext ExtType, addTags []*gostyle.StructFieldTag) []*gostyle.StructFieldTag {
+	var extDefaultTag *gostyle.StructFieldTag
+	switch ext {
+	case ExtTypeJSON:
+		extDefaultTag = gostyle.GetStructFieldTag("json", "%s,omitempty")
+	case ExtTypeYAML:
+		extDefaultTag = gostyle.GetStructFieldTag("yaml", "%s,omitempty")
+	default:
+		panic(fmt.Sprintf("ext default tag is not support:%s", ext))
+	}
+
+	extDefaultTag.SetValue(value)
+
+	tags := []*gostyle.StructFieldTag{extDefaultTag}
+	for _, t := range addTags {
+		t.SetValue(value)
+		if t.GetKey() != extDefaultTag.GetKey() {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // 获得子结构体的名称
@@ -93,95 +117,24 @@ type parseData struct {
 	structs []*gostyle.Struct
 }
 
-func (p *parseData) parseMapAsStruct(fatherStructName string, mapData map[string]interface{}) (*gostyle.StructDataBaseType, error) {
-	// fields := []*gostyle.StructField{}
-	// for key, value := range mapData {
-	// 	camelName := gostyle.FormatToCamelCase(key)
-	// 	tags := []*gostyle.StructFieldTag{
-	// 		&gostyle.StructFieldTag{
-	// 			Key:      string(p.ext),
-	// 			Template: "%s,omitempty",
-	// 		},
-	// 	}
+func (p *parseData) parseMapAsStruct(name string, mapData map[string]interface{}) (gostyle.DataBaseType, error) {
+	fields := []*gostyle.StructField{}
+	for fieldTagKey, fieldData := range mapData {
+		fieldName := gostyle.FormatToCamelCase(fieldTagKey)
+		fieldDataType, err := p.parseValue(genStructName(name, fieldName), fieldData)
+		if err != nil {
+			return nil, err
+		}
+		fieldTags := getTags(fieldTagKey, p.ext, p.addTags)
+		fields = append(fields, gostyle.GetStructField(fieldName, fieldDataType, fieldTags...))
+	}
 
-	// 	// 添加额外的tag
-	// 	for _, tag1 := range p.addTags {
-	// 		var isMatch bool
-	// 		for _, tag2 := range tags {
-	// 			if tag1.Key == tag1.Key {
-	// 				isMatch = true
-	// 				continue
-	// 			}
-	// 		}
-	// 		if !isMatch {
-	// 			tags = append(tags, &gostyle.StructFieldTag{
-	// 				Key:      tag1.Key,
-	// 				Template: tag1.Template,
-	// 			})
-	// 		}
-	// 	}
-
-	// 	// 开始初始化field
-	// 	field := &gostyle.StructField{
-	// 		Name: camelName,
-	// 		Tags: gostyle.StructFieldTagList(tags),
-	// 	}
-	// 	sort.Sort(field.Tags)
-
-	// 	// 处理dataType
-	// 	var dataType string
-	// 	isSlice := false
-	// 	isMap := false
-
-	// 	valueType := reflect.TypeOf(value)
-	// 	if valueType.Kind() == reflect.Slice {
-	// 		isSlice = true
-	// 		value = value.([]interface{})[0]
-	// 		valueType = reflect.TypeOf(value)
-	// 	}
-
-	// 	if valueType.Kind() == reflect.String {
-	// 		dataType = "string"
-	// 	} else if valueType.Kind() == reflect.Bool {
-	// 		dataType = "bool"
-	// 	} else if valueType.Kind() == reflect.Float64 || valueType.Kind() == reflect.Int {
-	// 		dataType = "int"
-	// 	} else if valueType.Kind() == reflect.Map {
-	// 		isMap = true
-	// 		formatMapData, ok := FormatMapData(value)
-	// 		if !ok {
-	// 			return fmt.Errorf("valueType is not support:map[interface{}]interface{}")
-	// 		}
-	// 		dataType = genStructName(structName, field.Name)
-	// 		err = o.parseMap(format, dataType, formatMapData)
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 	} else if valueType.Kind() == reflect.Slice {
-	// 		return fmt.Errorf("valueType is not support:[][]interface{}")
-	// 	} else {
-	// 		return fmt.Errorf("valueType is not support:%v", valueType)
-	// 	}
-
-	// 	if isSlice && isMap {
-	// 		field.DataType = fmt.Sprintf("[]*%s", dataType)
-	// 	} else if isSlice {
-	// 		field.DataType = fmt.Sprintf("[]%s", dataType)
-	// 	} else if isMap {
-	// 		field.DataType = fmt.Sprintf("*%s", dataType)
-	// 	} else {
-	// 		field.DataType = dataType
-	// 	}
-	// 	fields = append(fields, field)
-	// }
-
-	// sort.Sort(SortObjField(fields))
-
-	// o.Structs = append(o.Structs, &ObjStruct{Name: structName, Fields: fields})
-	return nil, nil
+	sort.Sort(gostyle.StructFieldList(fields))
+	p.structs = append(p.structs, gostyle.GetStruct(name, name, fields...))
+	return gostyle.GetStructDataBaseType(name, true), nil
 }
 
-func (p *parseData) parseValue(fatherStructName string, value interface{}) (gostyle.DataType, error) {
+func (p *parseData) parseValue(name string, value interface{}) (gostyle.DataType, error) {
 	var err error
 
 	valueType := reflect.TypeOf(value)
@@ -215,21 +168,21 @@ func (p *parseData) parseValue(fatherStructName string, value interface{}) (gost
 			return nil, fmt.Errorf("valueType is not support:map[interface{}]interface{}")
 		}
 		// map 中的元素 一律作为 struct
-		dataBaseType, err = p.parseMapAsStruct(fatherStructName, value.(map[string]interface{}))
+		dataBaseType, err = p.parseMapAsStruct(name, value.(map[string]interface{}))
 		if err != nil {
 			return nil, err
 		}
 	case reflect.String:
-		dataBaseType, _ = gostyle.GetGeneralDataBaseType(reflect.String)
+		dataBaseType = gostyle.GetGeneralDataBaseType(reflect.String)
 	case reflect.Bool:
-		dataBaseType, _ = gostyle.GetGeneralDataBaseType(reflect.Bool)
+		dataBaseType = gostyle.GetGeneralDataBaseType(reflect.Bool)
 	case reflect.Int:
-		dataBaseType, _ = gostyle.GetGeneralDataBaseType(reflect.Int)
+		dataBaseType = gostyle.GetGeneralDataBaseType(reflect.Int)
 	case reflect.Float64:
 		if p.ext == ExtTypeJSON {
-			dataBaseType, _ = gostyle.GetGeneralDataBaseType(reflect.Int)
+			dataBaseType = gostyle.GetGeneralDataBaseType(reflect.Int)
 		} else {
-			dataBaseType, _ = gostyle.GetGeneralDataBaseType(reflect.Float64)
+			dataBaseType = gostyle.GetGeneralDataBaseType(reflect.Float64)
 		}
 	default:
 		return nil, fmt.Errorf("valueType is not support:%v", valueType.Kind())
@@ -238,42 +191,27 @@ func (p *parseData) parseValue(fatherStructName string, value interface{}) (gost
 	var dataType gostyle.DataType
 	switch structKind {
 	case reflect.Slice:
-		dataType, err = gostyle.GetSliceDataType(dataBaseType, 0)
+		dataType = gostyle.GetSliceDataType(dataBaseType, 0)
 	case reflect.Map:
-		k, _ := gostyle.GetGeneralDataBaseType(reflect.String)
-		dataType, err = gostyle.GetMapDataType(k, dataBaseType)
+		dataType = gostyle.GetMapDataType(gostyle.GetGeneralDataBaseType(reflect.String), dataBaseType)
 	default:
-		dataType, err = gostyle.GetGeneralDataType(dataBaseType)
-	}
-	if err != nil {
-		return nil, err
+		dataType = gostyle.GetGeneralDataType(dataBaseType)
 	}
 	return dataType, nil
 }
 
-// // NewObjConfigFile 配置文件转objConfigFile
-// func NewObjConfigFile(configName, packageName, structName, configPath string) (*ObjConfigFile, error) {
-// 	format, mapData, err := parse(configPath)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	objConfigFile := &ObjConfigFile{
-// 		Name:        configName,
-// 		StructName:  structName,
-// 		PackageName: packageName,
-// 		Format:      format,
-// 	}
-// 	err = objConfigFile.parseMap(format, structName, mapData)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	// Structs 排序
-// 	structLength := len(objConfigFile.Structs)
-// 	newStructs := []*ObjStruct{objConfigFile.Structs[structLength-1]}
-// 	tmpStructs := objConfigFile.Structs[0 : structLength-1]
-// 	sort.Sort(SortObjStruct(tmpStructs))
-// 	newStructs = append(newStructs, tmpStructs...)
-// 	objConfigFile.Structs = newStructs
-// 	return objConfigFile, nil
-// }
+// String 格式化
+func (p *parseData) string() string {
+	// Structs 排序
+	structLength := len(p.structs)
+	newStructs := []*gostyle.Struct{p.structs[structLength-1]}
+	tempStructs := p.structs[:structLength-1]
+	sort.Sort(gostyle.StructList(tempStructs))
+	newStructs = append(newStructs, tempStructs...)
+	// 格式化
+	splits := []string{}
+	for _, s := range newStructs {
+		splits = append(splits, s.String())
+	}
+	return strings.Join(splits, "\n")
+}
